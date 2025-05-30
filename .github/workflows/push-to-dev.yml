@@ -1,0 +1,76 @@
+name: Update Dev Base Benchmark
+
+on:
+  push:
+    branches:
+      - dev # Or your main development branch (e.g., main)
+#test
+jobs:
+  generate_and_store_benchmark:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # To push to the benchmark-data branch
+    steps:
+      - name: Checkout 'dev' branch code
+        uses: actions/checkout@v4
+        with:
+          ref: dev # Or your main development branch
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Install Aztec CLI
+        run: |
+          curl -s https://install.aztec.network > tmp.sh
+          bash tmp.sh <<< yes \"yes\"
+
+      - name: Update path
+        run: echo "/home/runner/.aztec/bin" >> $GITHUB_PATH
+
+      - name: Set Aztec version
+        run: VERSION=0.87.2 aztec-up
+
+      - name: Start sandbox
+        run: aztec start --sandbox &
+
+      - name: Install project dependencies
+        run: yarn
+
+      - name: Compile
+        run: script -e -c "${AZTEC_NARGO:-aztec-nargo} compile"
+
+      - name: Codegen
+        run: script -e -c "aztec codegen target --outdir src/artifacts"
+
+      - name: Start PXE
+        run: VERSION=0.87.2 aztec start --port 8080 --pxe --pxe.nodeUrl=http://localhost:8080/ --pxe.proverEnabled false &
+        
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for sandbox to be ready..."
+          timeout 300 bash -c 'until curl -s http://localhost:8080 > /dev/null; do sleep 2; done'
+          echo "Sandbox is ready!"
+          
+      - name: Generate benchmark file
+        run: BASE_PXE_URL=http://localhost yarn bench
+
+      - name: Commit and Push Updated Benchmark File to dev
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add benchmarks/token_base.benchmark.json
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to benchmark file. Nothing to commit."
+          else
+            git commit -m "chore: update base benchmark data on dev [skip ci]"
+            # Use a token with write permissions if GITHUB_TOKEN doesn't suffice for cross-repository or protected branches.
+            # Default GITHUB_TOKEN should work for same-repo pushes to non-protected branches if permissions are set.
+            git push origin HEAD:${{ github.ref_name }} # Push to the same branch that triggered the workflow (dev)
+          fi
+
+      - name: Verify benchmark data storage location (For Debugging)
+        run: |
+          echo "Action expects data to be in 'benchmark-data' branch under 'aztec-standards/dev_base/'"
+          echo "The file stored should be 'token_base.benchmark.json' within that directory."
+          echo "PR workflow will try to fetch: origin/benchmark-data -- aztec-standards/dev_base/token_base.benchmark.json" 
