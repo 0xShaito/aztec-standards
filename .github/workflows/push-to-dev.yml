@@ -4,12 +4,12 @@ on:
   push:
     branches:
       - dev # Or your main development branch (e.g., main)
-
+#test
 jobs:
   generate_and_store_benchmark:
     runs-on: ubuntu-latest
     environment: Production
-    
+
     permissions:
       contents: write # To push to the benchmark-data branch
     steps:
