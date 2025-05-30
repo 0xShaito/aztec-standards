@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - dev # Or your main development branch (e.g., main)
-#test
+
 jobs:
   generate_and_store_benchmark:
     runs-on: ubuntu-latest
+    environment: Production
+    
     permissions:
       contents: write # To push to the benchmark-data branch
     steps:
@@ -54,18 +56,25 @@ jobs:
       - name: Generate benchmark file
         run: BASE_PXE_URL=http://localhost yarn bench
 
+      - name: Import GPG key
+        id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_config_global: true
+          git_user_name: "github-actions[bot]"
+          git_user_email: "shaito@wonderland.xyz"
+
       - name: Commit and Push Updated Benchmark File to dev
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add benchmarks/token_base.benchmark.json
           # Check if there are changes to commit
           if git diff --staged --quiet; then
             echo "No changes to benchmark file. Nothing to commit."
           else
-            git commit -m "chore: update base benchmark data on dev [skip ci]"
-            # Use a token with write permissions if GITHUB_TOKEN doesn't suffice for cross-repository or protected branches.
-            # Default GITHUB_TOKEN should work for same-repo pushes to non-protected branches if permissions are set.
+            git commit -S -m "chore: update base benchmark data on dev"
             git push origin HEAD:${{ github.ref_name }} # Push to the same branch that triggered the workflow (dev)
           fi
 
