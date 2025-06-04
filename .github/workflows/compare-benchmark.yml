@@ -1,0 +1,160 @@
+# .github/workflows/aztec-benchmark.yml
+# Benchmarks gas-usage & gate-count for every PR and comments the diff
+name: Aztec Benchmark Diff
+
+on:
+  pull_request:            # ← run on *all* PRs, regardless of base branch
+
+permissions:
+  contents: read           # clone repo and sub-modules   [oai_citation:0‡github.com](https://github.com/dorny/paths-filter?utm_source=chatgpt.com)
+  pull-requests: write     # create / update the PR comment   [oai_citation:1‡github.com](https://github.com/peter-evans/create-or-update-comment?utm_source=chatgpt.com)
+
+env:
+  BENCH_DIR: .benchmarks   # where `aztec-benchmark` writes its JSON
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+    # ──────────────────────────────────────────────────────────────
+    # 0️⃣  SHARED TOOLING – Buildx + Aztec CLI skeleton
+    # ──────────────────────────────────────────────────────────────
+    - name: Checkout repo (full history)
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0                                           # needed for later comparisons   [oai_citation:2‡github.com](https://github.com/dorny/paths-filter?utm_source=chatgpt.com)
+
+    - name: Set up Docker Buildx (Aztec sandbox needs BuildKit)
+      uses: docker/setup-buildx-action@v2                        # official Buildx action   [oai_citation:3‡github.com](https://github.com/docker/setup-buildx-action?utm_source=chatgpt.com)
+
+    - name: Install Aztec CLI once
+      run: |
+        curl -s https://install.aztec.network | bash             # installs aztec cli under ~/.aztec/bin   [oai_citation:4‡github.com](https://github.com/orgs/community/discussions/59677?utm_source=chatgpt.com)
+        echo "$HOME/.aztec/bin" >> $GITHUB_PATH                  # make CLI available in PATH
+
+    # Optional: skip if only docs changed
+    - name: Check for changes in src/
+      id: paths
+      uses: dorny/paths-filter@v3                                # filter helper   [oai_citation:5‡github.com](https://github.com/dorny/paths-filter?utm_source=chatgpt.com)
+      with:
+        filters: |
+          src:
+            - 'src/**'
+    - name: Stop early – no contract changes
+      if: steps.paths.outputs.src == 'false'
+      run: echo "No src/ changes – skipping benchmark." && exit 0
+
+    # ──────────────────────────────────────────────────────────────
+    # 1️⃣  BENCHMARK BASE COMMIT  (github.event.pull_request.base.sha)
+    # ──────────────────────────────────────────────────────────────
+    - name: Checkout BASE branch
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}           # SHA of merge-target   [oai_citation:6‡stackoverflow.com](https://stackoverflow.com/questions/61393981/getting-base-branch-sha-on-pull-request-in-github-action-workflow?utm_source=chatgpt.com)
+        path: base
+
+    - name: Detect Aztec version (BASE)
+      id: basever
+      working-directory: base
+      run: |
+        echo "ver=$(node -p \"require('./package.json').config.aztecVersion\")" >> $GITHUB_OUTPUT
+        echo "Base Aztec version is ${{ steps.basever.outputs.ver }}"
+
+    - name: Switch CLI to BASE version
+      run: |
+        VERSION=${{ steps.basever.outputs.ver }} aztec-up        # version manager   [oai_citation:7‡github.com](https://github.com/defi-wonderland/aztec-standards?utm_source=chatgpt.com)
+
+    - name: Start sandbox (BASE, background)
+      run: aztec start --sandbox &                               # sandbox command   [oai_citation:8‡docs.aztec.network](https://docs.aztec.network/developers/getting_started?utm_source=chatgpt.com)
+
+    - name: Start PXE node (BASE, background)
+      run: |
+        VERSION=${{ steps.basever.outputs.ver }} aztec \
+          start --port 8081 --pxe --pxe.nodeUrl=http://localhost:8080/ \
+          --pxe.proverEnabled=false &                            # CLI ref   [oai_citation:9‡docs.aztec.network](https://docs.aztec.network/the_aztec_network/guides/run_nodes/cli_reference?utm_source=chatgpt.com)
+
+    - name: Install deps (BASE)
+      working-directory: base
+      run: yarn
+
+    - name: Compile contracts (BASE)
+      working-directory: base
+      run: script -e -c "${AZTEC_NARGO:-aztec-nargo} compile"    # compile helper   [oai_citation:10‡github.com](https://github.com/AztecProtocol/google-benchmark?utm_source=chatgpt.com)
+
+    - name: Codegen wrappers (BASE)
+      working-directory: base
+      run: script -e -c "aztec codegen target --outdir src/artifacts"
+
+    - name: Benchmark (BASE)
+      working-directory: base
+      run: |
+        npx aztec-benchmark --json --suffix _base --out ${{ env.BENCH_DIR }}   # suffix flag   [oai_citation:11‡github.com](https://github.com/orgs/community/discussions/59677?utm_source=chatgpt.com)
+
+    # ──────────────────────────────────────────────────────────────
+    # 2️⃣  BENCHMARK PR HEAD  (github.event.pull_request.head.sha)
+    # ──────────────────────────────────────────────────────────────
+    - name: Checkout PR branch
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        path: pr
+
+    - name: Detect Aztec version (PR)
+      id: prver
+      working-directory: pr
+      run: |
+        echo "ver=$(node -p \"require('./package.json').config.aztecVersion\")" >> $GITHUB_OUTPUT
+        echo "PR Aztec version is ${{ steps.prver.outputs.ver }}"
+
+    - name: Switch CLI to PR version
+      run: |
+        VERSION=${{ steps.prver.outputs.ver }} aztec-up          # switch again for PR build
+
+    - name: Start sandbox (PR, background)
+      run: aztec start --sandbox &
+
+    - name: Start PXE node (PR, background)
+      run: |
+        VERSION=${{ steps.prver.outputs.ver }} aztec \
+          start --port 8082 --pxe --pxe.nodeUrl=http://localhost:8080/ \
+          --pxe.proverEnabled=false &
+
+    - name: Install deps (PR)
+      working-directory: pr
+      run: yarn
+
+    - name: Compile contracts (PR)
+      working-directory: pr
+      run: script -e -c "${AZTEC_NARGO:-aztec-nargo} compile"
+
+    - name: Codegen wrappers (PR)
+      working-directory: pr
+      run: script -e -c "aztec codegen target --outdir src/artifacts"
+
+    - name: Benchmark (PR)
+      working-directory: pr
+      run: |
+        npx aztec-benchmark --json --suffix _pr --out ${{ env.BENCH_DIR }}
+
+    # ──────────────────────────────────────────────────────────────
+    # 3️⃣  DIFF &  COMMENT
+    # ──────────────────────────────────────────────────────────────
+    - name: Generate Markdown diff
+      id: diff
+      uses: defi-wonderland/aztec-benchmark/action@main          # compare helper
+      with:
+        base_path: ${{ github.workspace }}/base/${{ env.BENCH_DIR }}
+        pr_path:   ${{ github.workspace }}/pr/${{ env.BENCH_DIR }}
+        threshold_pct: 2.5                                       # flag big regressions
+
+    - name: Create / update PR comment
+      uses: peter-evans/create-or-update-comment@v4              # sticky comment   [oai_citation:12‡github.com](https://github.com/marketplace/actions/create-or-update-comment?utm_source=chatgpt.com)
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        edit-mode: replace
+        body-includes: "### 🔍 Aztec Benchmark Diff"              # unique marker
+        body: |
+          ### 🔍 Aztec Benchmark Diff
+          
+          ${{ steps.diff.outputs.markdown }}
