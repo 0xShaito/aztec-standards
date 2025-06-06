@@ -1,8 +1,7 @@
 [workspace]
 members = [
 "src/token_contract",
-"src/dripper",
-"src/nft_contract"
+"src/dripper"
 ]
 
 [benchmark]
